@@ -8,6 +8,32 @@ const XERO_API = 'https://xero-invoice-bot.onrender.com/create-invoice';
 const APP_ID = 'cli_a9139fddafb89bb5';
 const APP_SECRET = 'BaChzUHA3iAPfddnIJ4T1eqvPqCMySPR';
 
+// 消息去重缓存（保存最近处理的消息ID）
+const processedMessages = new Set();
+const MESSAGE_CACHE_SIZE = 100;
+const MESSAGE_CACHE_TTL = 5 * 60 * 1000; // 5分钟
+
+// 清理过期消息
+function cleanOldMessages() {
+    // 简单实现：只保留最近100条
+    if (processedMessages.size > MESSAGE_CACHE_SIZE) {
+        const entries = Array.from(processedMessages);
+        processedMessages.clear();
+        entries.slice(-MESSAGE_CACHE_SIZE).forEach(entry => processedMessages.add(entry));
+    }
+}
+
+// 检查消息是否已处理
+function isMessageProcessed(messageId) {
+    return processedMessages.has(messageId);
+}
+
+// 标记消息为已处理
+function markMessageProcessed(messageId) {
+    processedMessages.add(messageId);
+    cleanOldMessages();
+}
+
 // 获取飞书 tenant_access_token
 async function getTenantToken() {
     return new Promise((resolve, reject) => {
@@ -186,6 +212,20 @@ const server = http.createServer(async (req, res) => {
                 const event = data.event || {};
                 const message = event.message || {};
                 const contentStr = message.content || '';
+                const messageId = message.message_id || '';
+
+                // 消息去重检查
+                if (messageId && isMessageProcessed(messageId)) {
+                    console.log(`消息 ${messageId} 已处理，跳过`);
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ status: 'duplicate' }));
+                    return;
+                }
+
+                // 标记消息为已处理
+                if (messageId) {
+                    markMessageProcessed(messageId);
+                }
 
                 // 解析消息内容
                 let text = '';
