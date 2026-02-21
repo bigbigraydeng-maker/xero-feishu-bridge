@@ -8,14 +8,19 @@ const XERO_API = 'https://xero-invoice-bot.onrender.com/create-invoice';
 const APP_ID = 'cli_a9139fddafb89bb5';
 const APP_SECRET = 'BaChzUHA3iAPfddnIJ4T1eqvPqCMySPR';
 
-// 消息去重缓存（保存最近处理的消息ID）
+// 客户名称映射表（简化名称 -> 完整信息）
+const CUSTOMER_MAP = {
+    'ray': { name: 'Ray Trading Ltd', email: 'raydeng923@gmail.com' },
+    'abc': { name: 'ABC Trading Limited', email: 'abc@example.com' },
+    'test': { name: 'Test Company Ltd', email: 'test@example.com' },
+    // 可以在这里添加更多客户
+};
+
+// 消息去重缓存
 const processedMessages = new Set();
 const MESSAGE_CACHE_SIZE = 100;
-const MESSAGE_CACHE_TTL = 5 * 60 * 1000; // 5分钟
 
-// 清理过期消息
 function cleanOldMessages() {
-    // 简单实现：只保留最近100条
     if (processedMessages.size > MESSAGE_CACHE_SIZE) {
         const entries = Array.from(processedMessages);
         processedMessages.clear();
@@ -23,12 +28,10 @@ function cleanOldMessages() {
     }
 }
 
-// 检查消息是否已处理
 function isMessageProcessed(messageId) {
     return processedMessages.has(messageId);
 }
 
-// 标记消息为已处理
 function markMessageProcessed(messageId) {
     processedMessages.add(messageId);
     cleanOldMessages();
@@ -80,14 +83,14 @@ async function getTenantToken() {
 async function sendFeishuMessage(chatId, text, token) {
     return new Promise((resolve, reject) => {
         const postData = JSON.stringify({
-            receive_id: chatId,
+            chat_id: chatId,
             msg_type: 'text',
-            content: JSON.stringify({ text: text })
+            content: JSON.stringify({ text })
         });
 
         const options = {
             hostname: 'open.feishu.cn',
-            path: '/open-apis/im/v1/messages?receive_id_type=chat_id',
+            path: '/open-apis/message/v4/send/',
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${token}`,
@@ -103,7 +106,7 @@ async function sendFeishuMessage(chatId, text, token) {
                 try {
                     resolve(JSON.parse(data));
                 } catch (e) {
-                    resolve(data);
+                    resolve({ error: data });
                 }
             });
         });
@@ -114,7 +117,7 @@ async function sendFeishuMessage(chatId, text, token) {
     });
 }
 
-// 调用 Xero API
+// 调用 Xero API 创建发票
 async function createInvoice(customerName, customerEmail, qty) {
     return new Promise((resolve, reject) => {
         const postData = JSON.stringify({
@@ -175,6 +178,85 @@ async function createInvoice(customerName, customerEmail, qty) {
         req.write(postData);
         req.end();
     });
+}
+
+// 查询 Xero 应收总额
+async function getReceivablesSummary() {
+    return new Promise((resolve, reject) => {
+        const options = {
+            hostname: 'xero-invoice-bot.onrender.com',
+            path: '/receivables-summary',
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        };
+
+        const req = https.request(options, (res) => {
+            let data = '';
+            res.on('data', (chunk) => data += chunk);
+            res.on('end', () => {
+                try {
+                    resolve(JSON.parse(data));
+                } catch (e) {
+                    resolve({ error: '解析失败', raw: data });
+                }
+            });
+        });
+
+        req.on('error', reject);
+        req.setTimeout(30000);
+        req.end();
+    });
+}
+
+// 解析开票指令
+// 支持格式：
+// 1. 开票 客户名 数量（使用映射表）
+// 2. 开票 客户名 邮箱 数量（完整信息）
+// 3. 开票 "客户全名" 邮箱 数量（带空格的客户名）
+function parseInvoiceCommand(text) {
+    // 去掉"开票"前缀并trim
+    const content = text.substring(2).trim();
+    
+    // 尝试匹配带引号的客户名：开票 "ABC Trading Ltd" email 100
+    const quotedMatch = content.match(/^"([^"]+)"\s+(\S+)\s+(\d+)$/);
+    if (quotedMatch) {
+        return {
+            name: quotedMatch[1],
+            email: quotedMatch[2],
+            qty: parseInt(quotedMatch[3])
+        };
+    }
+    
+    // 尝试匹配简单格式：开票 客户名 数量
+    const simpleParts = content.split(/\s+/);
+    
+    if (simpleParts.length === 2) {
+        // 格式：开票 客户名 数量
+        const alias = simpleParts[0].toLowerCase();
+        const qty = parseInt(simpleParts[1]);
+        
+        if (CUSTOMER_MAP[alias]) {
+            return {
+                name: CUSTOMER_MAP[alias].name,
+                email: CUSTOMER_MAP[alias].email,
+                qty: qty
+            };
+        }
+    } else if (simpleParts.length >= 3) {
+        // 格式：开票 客户名 邮箱 数量
+        // 客户名可能包含空格，但邮箱和数量在最后
+        const qty = parseInt(simpleParts[simpleParts.length - 1]);
+        const email = simpleParts[simpleParts.length - 2];
+        const name = simpleParts.slice(0, simpleParts.length - 2).join(' ');
+        
+        if (!isNaN(qty) && email.includes('@')) {
+            return { name, email, qty };
+        }
+    }
+    
+    return null;
 }
 
 // 创建 HTTP 服务器
@@ -242,10 +324,10 @@ const server = http.createServer(async (req, res) => {
 
                 // 处理开票指令
                 if (text.startsWith('开票')) {
-                    const parts = text.split(' ');
+                    const parsed = parseInvoiceCommand(text);
                     
-                    if (parts.length === 4) {
-                        const [, name, email, qty] = parts;
+                    if (parsed) {
+                        const { name, email, qty } = parsed;
                         
                         try {
                             // 调用 Xero API
@@ -258,7 +340,6 @@ const server = http.createServer(async (req, res) => {
                                 invoiceNumber = `失败(${result.statusCode})`;
                                 status = result.message || '未知错误';
                             } else if (result.invoice_error_status) {
-                                // Xero API 返回了错误状态
                                 invoiceNumber = '失败';
                                 if (result.invoice_raw && result.invoice_raw.includes('TokenExpired')) {
                                     status = 'Xero令牌过期，请联系管理员';
@@ -288,7 +369,6 @@ const server = http.createServer(async (req, res) => {
                         } catch (error) {
                             console.error('处理开票请求时出错:', error);
                             
-                            // 发送错误消息
                             try {
                                 const token = await getTenantToken();
                                 const chatId = message.chat_id;
@@ -302,24 +382,57 @@ const server = http.createServer(async (req, res) => {
                         try {
                             const token = await getTenantToken();
                             const chatId = message.chat_id;
-                            await sendFeishuMessage(
-                                chatId,
-                                '格式错误。使用方法：开票 客户名 邮箱 数量\n例如：开票 ABC abc@email.com 2',
-                                token
-                            );
+                            const helpText = `格式错误。使用方法：\n` +
+                                `1. 开票 客户名 数量（使用预设客户）\n` +
+                                `   例如：开票 ray 100\n\n` +
+                                `2. 开票 "客户全名" 邮箱 数量（新客户）\n` +
+                                `   例如：开票 "ABC Trading Ltd" abc@email.com 2\n\n` +
+                                `3. 开票 客户名 邮箱 数量（简单格式）\n` +
+                                `   例如：开票 ABC abc@email.com 2\n\n` +
+                                `预设客户：${Object.keys(CUSTOMER_MAP).join(', ')}`;
+                            await sendFeishuMessage(chatId, helpText, token);
                         } catch (e) {
                             console.error('发送帮助消息失败:', e);
                         }
                     }
+                    
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ status: 'ok' }));
+                    return;
                 }
 
+                // 处理应收查询指令
+                if (text === '应收汇总' || text === '应收账款') {
+                    try {
+                        const summary = await getReceivablesSummary();
+                        const token = await getTenantToken();
+                        const chatId = message.chat_id;
+                        
+                        let replyText;
+                        if (summary.error) {
+                            replyText = `查询失败: ${summary.error}`;
+                        } else {
+                            replyText = `应收汇总:\n${JSON.stringify(summary, null, 2)}`;
+                        }
+                        
+                        await sendFeishuMessage(chatId, replyText, token);
+                    } catch (error) {
+                        console.error('查询应收失败:', error);
+                    }
+                    
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ status: 'ok' }));
+                    return;
+                }
+
+                // 其他消息
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ status: 'ok' }));
+                res.end(JSON.stringify({ status: 'ignored' }));
 
             } catch (error) {
-                console.error('处理请求时出错:', error);
+                console.error('处理飞书请求时出错:', error);
                 res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ status: 'error', message: error.message }));
+                res.end(JSON.stringify({ error: error.message }));
             }
         });
         return;
@@ -327,29 +440,13 @@ const server = http.createServer(async (req, res) => {
 
     // 404
     res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'not found' }));
+    res.end(JSON.stringify({ error: 'Not found' }));
 });
 
 server.listen(PORT, () => {
-    console.log('==========================================');
-    console.log('Xero-Feishu Bridge 已启动');
-    console.log('==========================================');
-    console.log(`服务地址: http://127.0.0.1:${PORT}`);
-    console.log('');
-    console.log('可用端点:');
-    console.log(`  健康检查: http://127.0.0.1:${PORT}/`);
-    console.log(`  飞书回调: http://127.0.0.1:${PORT}/feishu`);
-    console.log('');
-    console.log('飞书 App ID:', APP_ID);
-    console.log('Xero API:', XERO_API);
-    console.log('==========================================');
-});
-
-// 优雅关闭
-process.on('SIGINT', () => {
-    console.log('\n正在关闭服务...');
-    server.close(() => {
-        console.log('服务已关闭');
-        process.exit(0);
-    });
+    console.log(`Xero-Feishu Bridge running on port ${PORT}`);
+    console.log('支持的命令格式：');
+    console.log('1. 开票 客户名 数量（使用预设客户）');
+    console.log('2. 开票 "客户全名" 邮箱 数量（新客户）');
+    console.log('3. 应收汇总（查询应收账款）');
 });
