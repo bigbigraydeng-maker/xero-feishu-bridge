@@ -494,16 +494,19 @@ const server = http.createServer(async (req, res) => {
                 const token = await getTenantToken();
                 const chatId = message.chat_id;
 
-                // 使用 AI 处理消息
-                const handled = await processMessageWithAI(text, chatId, token);
-                
-                if (!handled) {
-                    // AI 未能处理，发送帮助信息
-                    await sendFeishuMessage(chatId, getHelpText(), token);
-                }
-                
+                // 立即响应飞书（避免超时）
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ status: 'ok' }));
+                res.end(JSON.stringify({ status: 'processing' }));
+
+                // 异步处理消息（在响应之后）
+                processMessageWithAI(text, chatId, token).then(handled => {
+                    if (!handled) {
+                        sendFeishuMessage(chatId, getHelpText(), token);
+                    }
+                }).catch(err => {
+                    console.error('异步处理失败:', err);
+                    sendFeishuMessage(chatId, '处理失败，请稍后重试', token);
+                });
 
             } catch (error) {
                 console.error('处理飞书请求时出错:', error);
