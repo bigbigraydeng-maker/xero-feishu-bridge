@@ -474,6 +474,7 @@ const server = http.createServer(async (req, res) => {
 
                 // 处理 challenge 验证
                 if (data.challenge) {
+                    console.log('处理 challenge 验证:', data.challenge);
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ challenge: data.challenge }));
                     return;
@@ -481,9 +482,21 @@ const server = http.createServer(async (req, res) => {
 
                 // 处理消息事件
                 const event = data.event || {};
+                
+                // 如果不是消息事件，直接返回
+                if (event.type !== 'message') {
+                    console.log('非消息事件，跳过:', event.type);
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ status: 'ignored' }));
+                    return;
+                }
+                
                 const message = event.message || {};
                 const contentStr = message.content || '';
                 const messageId = message.message_id || '';
+                
+                console.log('事件类型:', event.type);
+                console.log('消息对象:', JSON.stringify(message, null, 2));
 
                 // 消息去重检查
                 if (messageId && isMessageProcessed(messageId)) {
