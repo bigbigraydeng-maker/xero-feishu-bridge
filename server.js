@@ -286,6 +286,7 @@ async function createInvoice(customerName, customerEmail, qty) {
 // 查询 Xero 应收总额
 async function getReceivablesSummary() {
     return new Promise((resolve, reject) => {
+        console.log('正在调用 xero-invoice-bot /receivables-summary...');
         const options = {
             hostname: 'xero-invoice-bot.onrender.com',
             path: '/receivables-summary',
@@ -296,9 +297,11 @@ async function getReceivablesSummary() {
         };
 
         const req = https.request(options, (res) => {
+            console.log('xero-invoice-bot 响应状态:', res.statusCode);
             let data = '';
             res.on('data', (chunk) => data += chunk);
             res.on('end', () => {
+                console.log('xero-invoice-bot 响应数据:', data.substring(0, 500));
                 try {
                     resolve(JSON.parse(data));
                 } catch (e) {
@@ -307,7 +310,10 @@ async function getReceivablesSummary() {
             });
         });
 
-        req.on('error', reject);
+        req.on('error', (err) => {
+            console.error('调用 xero-invoice-bot 失败:', err);
+            reject(err);
+        });
         req.setTimeout(30000);
         req.end();
     });
