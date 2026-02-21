@@ -1,0 +1,15 @@
+# Render Blueprint for Xero-Feishu Bridge
+# 在 Render Dashboard 中使用此配置
+
+services:
+  - type: web
+    name: xero-feishu-bridge
+    runtime: node
+    plan: standard  # 付费版，无休眠
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+    healthCheckPath: /
+    autoDeploy: true

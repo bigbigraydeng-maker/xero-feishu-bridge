@@ -1,0 +1,21 @@
+{
+  "name": "xero-feishu-bridge",
+  "version": "1.0.0",
+  "description": "Xero Invoice Bot - Feishu Enterprise App Bridge",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "xero",
+    "feishu",
+    "invoice",
+    "bot"
+  ],
+  "author": "",
+  "license": "MIT"
+}
