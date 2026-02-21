@@ -7,6 +7,7 @@ const PORT = process.env.PORT || 5001;
 const XERO_API = 'https://xero-invoice-bot.onrender.com/create-invoice';
 const APP_ID = 'cli_a9139fddafb89bb5';
 const APP_SECRET = 'BaChzUHA3iAPfddnIJ4T1eqvPqCMySPR';
+const MOONSHOT_API_KEY = 'sk-9ELqQcQuflGPjhVZYt8mAiQPf6KXvjjO2wdmzcTTyBdsEFp1';
 
 // 客户名称映射表（简化名称 -> 完整信息）
 const CUSTOMER_MAP = {
@@ -35,6 +36,87 @@ function isMessageProcessed(messageId) {
 function markMessageProcessed(messageId) {
     processedMessages.add(messageId);
     cleanOldMessages();
+}
+
+// ===============================
+// Kimi AI 调用
+// ===============================
+async function callKimiAI(userMessage) {
+    return new Promise((resolve, reject) => {
+        const postData = JSON.stringify({
+            model: "kimi-k2.5",
+            messages: [
+                {
+                    role: "system",
+                    content: `你是一个Xero财务助手。请分析用户的自然语言输入，提取意图和参数。
+
+可用操作：
+1. create_invoice - 创建发票
+2. query_receivables - 查询应收账款
+3. help - 帮助信息
+4. unknown - 无法理解
+
+预设客户映射：
+${Object.entries(CUSTOMER_MAP).map(([k, v]) => `- "${k}" -> ${v.name} (${v.email})`).join('\n')}
+
+请返回严格的JSON格式（不要有任何其他文字）：
+{
+    "action": "create_invoice|query_receivables|help|unknown",
+    "customer_name": "客户名称（如果提到）",
+    "customer_alias": "客户简称（如果匹配预设）",
+    "email": "邮箱（如果提供）",
+    "quantity": 数量（数字，如果提到）,
+    "confidence": 0.0-1.0,
+    "response": "对用户的友好回复（如果不需要执行操作）"
+}`
+                },
+                {
+                    role: "user",
+                    content: userMessage
+                }
+            ],
+            temperature: 0.3,
+            response_format: { type: "json_object" }
+        });
+
+        const options = {
+            hostname: 'api.moonshot.cn',
+            path: '/v1/chat/completions',
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${MOONSHOT_API_KEY}`,
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(postData)
+            }
+        };
+
+        const req = https.request(options, (res) => {
+            let data = '';
+            res.on('data', (chunk) => data += chunk);
+            res.on('end', () => {
+                try {
+                    const result = JSON.parse(data);
+                    if (result.choices && result.choices[0]) {
+                        const content = result.choices[0].message.content;
+                        resolve(JSON.parse(content));
+                    } else {
+                        reject(new Error('Invalid AI response'));
+                    }
+                } catch (e) {
+                    console.error('AI解析错误:', e, data);
+                    reject(e);
+                }
+            });
+        });
+
+        req.on('error', (err) => {
+            console.error('AI请求错误:', err);
+            reject(err);
+        });
+        req.setTimeout(30000);
+        req.write(postData);
+        req.end();
+    });
 }
 
 // 获取飞书 tenant_access_token
@@ -210,53 +292,138 @@ async function getReceivablesSummary() {
     });
 }
 
-// 解析开票指令
-// 支持格式：
-// 1. 开票 客户名 数量（使用映射表）
-// 2. 开票 客户名 邮箱 数量（完整信息）
-// 3. 开票 "客户全名" 邮箱 数量（带空格的客户名）
-function parseInvoiceCommand(text) {
-    // 去掉"开票"前缀并trim
-    const content = text.substring(2).trim();
-    
-    // 尝试匹配带引号的客户名：开票 "ABC Trading Ltd" email 100
-    const quotedMatch = content.match(/^"([^"]+)"\s+(\S+)\s+(\d+)$/);
-    if (quotedMatch) {
-        return {
-            name: quotedMatch[1],
-            email: quotedMatch[2],
-            qty: parseInt(quotedMatch[3])
-        };
-    }
-    
-    // 尝试匹配简单格式：开票 客户名 数量
-    const simpleParts = content.split(/\s+/);
-    
-    if (simpleParts.length === 2) {
-        // 格式：开票 客户名 数量
-        const alias = simpleParts[0].toLowerCase();
-        const qty = parseInt(simpleParts[1]);
-        
-        if (CUSTOMER_MAP[alias]) {
-            return {
-                name: CUSTOMER_MAP[alias].name,
-                email: CUSTOMER_MAP[alias].email,
-                qty: qty
-            };
+// ===============================
+// 智能消息处理（使用 AI）
+// ===============================
+async function processMessageWithAI(text, chatId, token) {
+    try {
+        console.log('调用 Kimi AI 分析:', text);
+        const aiResult = await callKimiAI(text);
+        console.log('AI 分析结果:', aiResult);
+
+        // 根据 AI 分析结果执行操作
+        switch (aiResult.action) {
+            case 'create_invoice':
+                return await handleCreateInvoice(aiResult, chatId, token);
+            
+            case 'query_receivables':
+                return await handleQueryReceivables(chatId, token);
+            
+            case 'help':
+                await sendFeishuMessage(chatId, aiResult.response || getHelpText(), token);
+                return true;
+            
+            case 'unknown':
+                await sendFeishuMessage(chatId, aiResult.response || '抱歉，我不太理解您的意思。输入"帮助"查看可用命令。', token);
+                return true;
+            
+            default:
+                // 回退到传统指令解析
+                return false;
         }
-    } else if (simpleParts.length >= 3) {
-        // 格式：开票 客户名 邮箱 数量
-        // 客户名可能包含空格，但邮箱和数量在最后
-        const qty = parseInt(simpleParts[simpleParts.length - 1]);
-        const email = simpleParts[simpleParts.length - 2];
-        const name = simpleParts.slice(0, simpleParts.length - 2).join(' ');
-        
-        if (!isNaN(qty) && email.includes('@')) {
-            return { name, email, qty };
+    } catch (error) {
+        console.error('AI 处理失败:', error);
+        // AI 失败时回退到传统解析
+        return false;
+    }
+}
+
+// 处理创建发票
+async function handleCreateInvoice(aiResult, chatId, token) {
+    let customerName = aiResult.customer_name;
+    let customerEmail = aiResult.email;
+    let qty = aiResult.quantity;
+
+    // 如果 AI 识别了客户别名，使用映射表
+    if (aiResult.customer_alias && CUSTOMER_MAP[aiResult.customer_alias]) {
+        const mapped = CUSTOMER_MAP[aiResult.customer_alias];
+        customerName = mapped.name;
+        customerEmail = mapped.email;
+    }
+
+    // 验证必要参数
+    if (!customerName || !qty) {
+        await sendFeishuMessage(chatId, '请提供客户名称和数量。例如："给 Ray 开 100 箱发票"', token);
+        return true;
+    }
+
+    // 如果没有邮箱，尝试从映射表查找
+    if (!customerEmail) {
+        const alias = Object.keys(CUSTOMER_MAP).find(k => 
+            CUSTOMER_MAP[k].name.toLowerCase() === customerName.toLowerCase()
+        );
+        if (alias) {
+            customerEmail = CUSTOMER_MAP[alias].email;
         }
     }
-    
-    return null;
+
+    if (!customerEmail) {
+        await sendFeishuMessage(chatId, `请提供 ${customerName} 的邮箱地址。例如："给 ${customerName} (email@example.com) 开 100 箱发票"`, token);
+        return true;
+    }
+
+    // 创建发票
+    try {
+        const result = await createInvoice(customerName, customerEmail, qty);
+        
+        let replyText;
+        if (result.error) {
+            replyText = `开票失败: ${result.message || '未知错误'}`;
+        } else if (result.invoice_error_status) {
+            replyText = `开票失败: ${result.invoice_raw || 'Xero API 错误'}`;
+        } else {
+            replyText = `✅ 开票成功！\n发票号: ${result.invoice_number}\n客户: ${customerName}\n数量: ${qty}箱\n邮件状态: ${result.email_status}`;
+        }
+        
+        await sendFeishuMessage(chatId, replyText, token);
+        return true;
+    } catch (error) {
+        await sendFeishuMessage(chatId, `开票处理失败: ${error.message}`, token);
+        return true;
+    }
+}
+
+// 处理查询应收
+async function handleQueryReceivables(chatId, token) {
+    try {
+        const summary = await getReceivablesSummary();
+        
+        let replyText;
+        if (summary.error) {
+            replyText = `查询失败: ${summary.error}`;
+        } else {
+            replyText = `📊 应收账款汇总\n\n` +
+                `总应收: $${summary.total_outstanding?.toFixed(2) || 0}\n` +
+                `发票总数: ${summary.total_invoices || 0}\n` +
+                `逾期发票: ${summary.overdue_invoices || 0}\n` +
+                `逾期金额: $${summary.overdue_amount?.toFixed(2) || 0}\n\n`;
+            
+            if (summary.by_customer && Object.keys(summary.by_customer).length > 0) {
+                replyText += `按客户统计:\n`;
+                for (const [name, data] of Object.entries(summary.by_customer)) {
+                    replyText += `- ${name}: ${data.count}张, $${data.amount?.toFixed(2) || 0}\n`;
+                }
+            }
+        }
+        
+        await sendFeishuMessage(chatId, replyText, token);
+        return true;
+    } catch (error) {
+        await sendFeishuMessage(chatId, `查询失败: ${error.message}`, token);
+        return true;
+    }
+}
+
+// 获取帮助文本
+function getHelpText() {
+    return `🤖 Xero 智能财务助手\n\n` +
+        `💡 您可以这样跟我说:\n` +
+        `• "给 Ray 开 100 箱葡萄发票"\n` +
+        `• "ABC Trading Ltd 需要 50 箱"\n` +
+        `• "查询一下应收账款"\n` +
+        `• "谁还欠我们钱"\n\n` +
+        `📋 预设客户:\n` +
+        Object.entries(CUSTOMER_MAP).map(([k, v]) => `• ${k} → ${v.name}`).join('\n');
 }
 
 // 创建 HTTP 服务器
@@ -269,6 +436,7 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ 
             status: 'running', 
             service: 'xero-feishu-bridge',
+            ai_enabled: true,
             timestamp: new Date().toISOString()
         }));
         return;
@@ -322,112 +490,20 @@ const server = http.createServer(async (req, res) => {
 
                 console.log('解析到的文本:', text);
 
-                // 处理开票指令
-                if (text.startsWith('开票')) {
-                    const parsed = parseInvoiceCommand(text);
-                    
-                    if (parsed) {
-                        const { name, email, qty } = parsed;
-                        
-                        try {
-                            // 调用 Xero API
-                            console.log(`创建发票: ${name}, ${email}, ${qty}`);
-                            const result = await createInvoice(name, email, qty);
-                            console.log('Xero API 返回:', result);
+                // 获取飞书 token
+                const token = await getTenantToken();
+                const chatId = message.chat_id;
 
-                            let invoiceNumber, status;
-                            if (result.error) {
-                                invoiceNumber = `失败(${result.statusCode})`;
-                                status = result.message || '未知错误';
-                            } else if (result.invoice_error_status) {
-                                invoiceNumber = '失败';
-                                if (result.invoice_raw && result.invoice_raw.includes('TokenExpired')) {
-                                    status = 'Xero令牌过期，请联系管理员';
-                                } else if (result.invoice_raw) {
-                                    try {
-                                        const errorData = JSON.parse(result.invoice_raw);
-                                        status = errorData.Detail || errorData.Title || 'Xero API错误';
-                                    } catch (e) {
-                                        status = 'Xero API错误';
-                                    }
-                                } else {
-                                    status = 'Xero API错误';
-                                }
-                            } else {
-                                invoiceNumber = result.invoice_number || '失败';
-                                status = result.email_status || '未知';
-                            }
-
-                            // 获取 token 并回复
-                            const token = await getTenantToken();
-                            const chatId = message.chat_id;
-                            const replyText = `开票完成：${invoiceNumber} 邮件状态:${status}`;
-                            
-                            const sendResult = await sendFeishuMessage(chatId, replyText, token);
-                            console.log('发送消息结果:', sendResult);
-
-                        } catch (error) {
-                            console.error('处理开票请求时出错:', error);
-                            
-                            try {
-                                const token = await getTenantToken();
-                                const chatId = message.chat_id;
-                                await sendFeishuMessage(chatId, `开票处理失败: ${error.message}`, token);
-                            } catch (e) {
-                                console.error('发送错误消息失败:', e);
-                            }
-                        }
-                    } else {
-                        // 格式错误
-                        try {
-                            const token = await getTenantToken();
-                            const chatId = message.chat_id;
-                            const helpText = `格式错误。使用方法：\n` +
-                                `1. 开票 客户名 数量（使用预设客户）\n` +
-                                `   例如：开票 ray 100\n\n` +
-                                `2. 开票 "客户全名" 邮箱 数量（新客户）\n` +
-                                `   例如：开票 "ABC Trading Ltd" abc@email.com 2\n\n` +
-                                `3. 开票 客户名 邮箱 数量（简单格式）\n` +
-                                `   例如：开票 ABC abc@email.com 2\n\n` +
-                                `预设客户：${Object.keys(CUSTOMER_MAP).join(', ')}`;
-                            await sendFeishuMessage(chatId, helpText, token);
-                        } catch (e) {
-                            console.error('发送帮助消息失败:', e);
-                        }
-                    }
-                    
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ status: 'ok' }));
-                    return;
+                // 使用 AI 处理消息
+                const handled = await processMessageWithAI(text, chatId, token);
+                
+                if (!handled) {
+                    // AI 未能处理，发送帮助信息
+                    await sendFeishuMessage(chatId, getHelpText(), token);
                 }
-
-                // 处理应收查询指令
-                if (text === '应收汇总' || text === '应收账款') {
-                    try {
-                        const summary = await getReceivablesSummary();
-                        const token = await getTenantToken();
-                        const chatId = message.chat_id;
-                        
-                        let replyText;
-                        if (summary.error) {
-                            replyText = `查询失败: ${summary.error}`;
-                        } else {
-                            replyText = `应收汇总:\n${JSON.stringify(summary, null, 2)}`;
-                        }
-                        
-                        await sendFeishuMessage(chatId, replyText, token);
-                    } catch (error) {
-                        console.error('查询应收失败:', error);
-                    }
-                    
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ status: 'ok' }));
-                    return;
-                }
-
-                // 其他消息
+                
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ status: 'ignored' }));
+                res.end(JSON.stringify({ status: 'ok' }));
 
             } catch (error) {
                 console.error('处理飞书请求时出错:', error);
@@ -444,9 +520,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-    console.log(`Xero-Feishu Bridge running on port ${PORT}`);
-    console.log('支持的命令格式：');
-    console.log('1. 开票 客户名 数量（使用预设客户）');
-    console.log('2. 开票 "客户全名" 邮箱 数量（新客户）');
-    console.log('3. 应收汇总（查询应收账款）');
+    console.log(`Xero-Feishu Bridge with AI running on port ${PORT}`);
+    console.log('Kimi AI enabled!');
 });
