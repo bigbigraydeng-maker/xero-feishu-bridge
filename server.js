@@ -390,55 +390,67 @@ async function handleCreateInvoice(aiResult, chatId, token) {
     }
 
     // 创建发票
-    try {
-        const result = await createInvoice(customerName, customerEmail, qty);
-        
-        let replyText;
-        if (result.error) {
-            replyText = `开票失败: ${result.message || '未知错误'}`;
-        } else if (result.invoice_error_status) {
-            replyText = `开票失败: ${result.invoice_raw || 'Xero API 错误'}`;
-        } else {
-            replyText = `✅ 开票成功！\n发票号: ${result.invoice_number}\n客户: ${customerName}\n数量: ${qty}箱\n邮件状态: ${result.email_status}`;
+    // 先立即回复，避免飞书超时
+    await sendFeishuMessage(chatId, `⏳ 正在为 ${customerName} 创建 ${qty} 箱发票，请稍候...`, token);
+    
+    // 异步处理开票
+    setTimeout(async () => {
+        try {
+            const result = await createInvoice(customerName, customerEmail, qty);
+            
+            let replyText;
+            if (result.error) {
+                replyText = `开票失败: ${result.message || '未知错误'}`;
+            } else if (result.invoice_error_status) {
+                replyText = `开票失败: ${result.invoice_raw || 'Xero API 错误'}`;
+            } else {
+                replyText = `✅ 开票成功！\n发票号: ${result.invoice_number}\n客户: ${customerName}\n数量: ${qty}箱\n邮件状态: ${result.email_status}`;
+            }
+            
+            await sendFeishuMessage(chatId, replyText, token);
+        } catch (error) {
+            await sendFeishuMessage(chatId, `开票处理失败: ${error.message}`, token);
         }
-        
-        await sendFeishuMessage(chatId, replyText, token);
-        return true;
-    } catch (error) {
-        await sendFeishuMessage(chatId, `开票处理失败: ${error.message}`, token);
-        return true;
-    }
+    }, 100);
+    
+    return true;
 }
 
 // 处理查询应收
 async function handleQueryReceivables(chatId, token) {
-    try {
-        const summary = await getReceivablesSummary();
-        
-        let replyText;
-        if (summary.error) {
-            replyText = `查询失败: ${summary.error}`;
-        } else {
-            replyText = `📊 应收账款汇总\n\n` +
-                `总应收: $${summary.total_outstanding?.toFixed(2) || 0}\n` +
-                `发票总数: ${summary.total_invoices || 0}\n` +
-                `逾期发票: ${summary.overdue_invoices || 0}\n` +
-                `逾期金额: $${summary.overdue_amount?.toFixed(2) || 0}\n\n`;
+    // 先立即回复，避免飞书超时
+    await sendFeishuMessage(chatId, '⏳ 正在查询应收账款，请稍候...', token);
+    
+    // 异步处理查询
+    setTimeout(async () => {
+        try {
+            const summary = await getReceivablesSummary();
             
-            if (summary.by_customer && Object.keys(summary.by_customer).length > 0) {
-                replyText += `按客户统计:\n`;
-                for (const [name, data] of Object.entries(summary.by_customer)) {
-                    replyText += `- ${name}: ${data.count}张, $${data.amount?.toFixed(2) || 0}\n`;
+            let replyText;
+            if (summary.error) {
+                replyText = `查询失败: ${summary.error}`;
+            } else {
+                replyText = `📊 应收账款汇总\n\n` +
+                    `总应收: $${summary.total_outstanding?.toFixed(2) || 0}\n` +
+                    `发票总数: ${summary.total_invoices || 0}\n` +
+                    `逾期发票: ${summary.overdue_invoices || 0}\n` +
+                    `逾期金额: $${summary.overdue_amount?.toFixed(2) || 0}\n\n`;
+                
+                if (summary.by_customer && Object.keys(summary.by_customer).length > 0) {
+                    replyText += `按客户统计:\n`;
+                    for (const [name, data] of Object.entries(summary.by_customer)) {
+                        replyText += `- ${name}: ${data.count}张, $${data.amount?.toFixed(2) || 0}\n`;
+                    }
                 }
             }
+            
+            await sendFeishuMessage(chatId, replyText, token);
+        } catch (error) {
+            await sendFeishuMessage(chatId, `查询失败: ${error.message}`, token);
         }
-        
-        await sendFeishuMessage(chatId, replyText, token);
-        return true;
-    } catch (error) {
-        await sendFeishuMessage(chatId, `查询失败: ${error.message}`, token);
-        return true;
-    }
+    }, 100);
+    
+    return true;
 }
 
 // 获取帮助文本
