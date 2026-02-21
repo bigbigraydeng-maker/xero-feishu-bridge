@@ -97,6 +97,11 @@ async function createInvoice(customerName, customerEmail, qty) {
             qty: parseInt(qty)
         });
 
+        console.log('调用 Xero API:', {
+            url: 'https://xero-invoice-bot.onrender.com/create-invoice',
+            data: JSON.parse(postData)
+        });
+
         const options = {
             hostname: 'xero-invoice-bot.onrender.com',
             path: '/create-invoice',
@@ -109,17 +114,37 @@ async function createInvoice(customerName, customerEmail, qty) {
 
         const req = https.request(options, (res) => {
             let data = '';
+            console.log('Xero API 响应状态:', res.statusCode);
             res.on('data', (chunk) => data += chunk);
             res.on('end', () => {
+                console.log('Xero API 响应数据:', data);
                 try {
-                    resolve(JSON.parse(data));
+                    const result = JSON.parse(data);
+                    if (res.statusCode >= 200 && res.statusCode < 300) {
+                        resolve(result);
+                    } else {
+                        resolve({ 
+                            error: true, 
+                            statusCode: res.statusCode,
+                            message: result.message || result.error || 'API调用失败',
+                            raw: data
+                        });
+                    }
                 } catch (e) {
-                    resolve({ error: data });
+                    resolve({ 
+                        error: true, 
+                        statusCode: res.statusCode,
+                        message: '解析响应失败',
+                        raw: data 
+                    });
                 }
             });
         });
 
-        req.on('error', reject);
+        req.on('error', (err) => {
+            console.error('Xero API 请求错误:', err);
+            reject(err);
+        });
         req.setTimeout(30000);
         req.write(postData);
         req.end();
@@ -188,8 +213,14 @@ const server = http.createServer(async (req, res) => {
                             const result = await createInvoice(name, email, qty);
                             console.log('Xero API 返回:', result);
 
-                            const invoiceNumber = result.invoice_number || '失败';
-                            const status = result.email_status || '未知';
+                            let invoiceNumber, status;
+                            if (result.error) {
+                                invoiceNumber = `失败(${result.statusCode})`;
+                                status = result.message || '未知错误';
+                            } else {
+                                invoiceNumber = result.invoice_number || '失败';
+                                status = result.email_status || '未知';
+                            }
 
                             // 获取 token 并回复
                             const token = await getTenantToken();
