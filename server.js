@@ -92,14 +92,35 @@ ${Object.entries(CUSTOMER_MAP).map(([k, v]) => `- "${k}" -> ${v.name} (${v.email
 
         const req = https.request(options, (res) => {
             let data = '';
+            console.log('Kimi API 响应状态:', res.statusCode);
             res.on('data', (chunk) => data += chunk);
             res.on('end', () => {
+                console.log('Kimi API 原始响应:', data.substring(0, 500));
                 try {
                     const result = JSON.parse(data);
-                    if (result.choices && result.choices[0]) {
+                    
+                    // 检查 API 错误
+                    if (result.error) {
+                        console.error('Kimi API 返回错误:', result.error);
+                        reject(new Error(result.error.message || 'Kimi API error'));
+                        return;
+                    }
+                    
+                    if (result.choices && result.choices[0] && result.choices[0].message) {
                         const content = result.choices[0].message.content;
-                        resolve(JSON.parse(content));
+                        console.log('Kimi AI 内容:', content);
+                        try {
+                            resolve(JSON.parse(content));
+                        } catch (parseErr) {
+                            console.error('JSON 解析失败:', parseErr);
+                            // 如果解析失败，返回未知意图
+                            resolve({
+                                action: 'unknown',
+                                response: '抱歉，我没能理解您的意思。'
+                            });
+                        }
                     } else {
+                        console.error('Invalid AI response structure:', result);
                         reject(new Error('Invalid AI response'));
                     }
                 } catch (e) {
