@@ -182,18 +182,19 @@ async function getTenantToken() {
     });
 }
 
-// 发送飞书消息
+// 发送飞书消息 (使用新版 API v1)
 async function sendFeishuMessage(chatId, text, token) {
     return new Promise((resolve, reject) => {
+        // 新版飞书 API 格式
         const postData = JSON.stringify({
-            chat_id: chatId,
+            receive_id: chatId,
             msg_type: 'text',
-            content: JSON.stringify({ text })
+            content: JSON.stringify({ text: text })
         });
 
         const options = {
             hostname: 'open.feishu.cn',
-            path: '/open-apis/message/v4/send/',
+            path: '/open-apis/im/v1/messages?receive_id_type=chat_id',
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${token}`,
@@ -206,15 +207,23 @@ async function sendFeishuMessage(chatId, text, token) {
             let data = '';
             res.on('data', (chunk) => data += chunk);
             res.on('end', () => {
+                console.log('飞书消息发送响应:', data);
                 try {
-                    resolve(JSON.parse(data));
+                    const result = JSON.parse(data);
+                    if (result.code !== 0) {
+                        console.error('飞书消息发送失败:', result);
+                    }
+                    resolve(result);
                 } catch (e) {
                     resolve({ error: data });
                 }
             });
         });
 
-        req.on('error', reject);
+        req.on('error', (err) => {
+            console.error('飞书消息发送错误:', err);
+            reject(err);
+        });
         req.write(postData);
         req.end();
     });
