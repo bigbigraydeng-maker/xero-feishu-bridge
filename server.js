@@ -75,7 +75,7 @@ ${Object.entries(CUSTOMER_MAP).map(([k, v]) => `- "${k}" -> ${v.name} (${v.email
                     content: userMessage
                 }
             ],
-            temperature: 0.3,
+            temperature: 1,
             response_format: { type: "json_object" }
         });
 
