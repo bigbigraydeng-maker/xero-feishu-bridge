@@ -217,6 +217,21 @@ const server = http.createServer(async (req, res) => {
                             if (result.error) {
                                 invoiceNumber = `失败(${result.statusCode})`;
                                 status = result.message || '未知错误';
+                            } else if (result.invoice_error_status) {
+                                // Xero API 返回了错误状态
+                                invoiceNumber = '失败';
+                                if (result.invoice_raw && result.invoice_raw.includes('TokenExpired')) {
+                                    status = 'Xero令牌过期，请联系管理员';
+                                } else if (result.invoice_raw) {
+                                    try {
+                                        const errorData = JSON.parse(result.invoice_raw);
+                                        status = errorData.Detail || errorData.Title || 'Xero API错误';
+                                    } catch (e) {
+                                        status = 'Xero API错误';
+                                    }
+                                } else {
+                                    status = 'Xero API错误';
+                                }
                             } else {
                                 invoiceNumber = result.invoice_number || '失败';
                                 status = result.email_status || '未知';
