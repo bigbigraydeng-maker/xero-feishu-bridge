@@ -483,20 +483,20 @@ const server = http.createServer(async (req, res) => {
                 // 处理消息事件
                 const event = data.event || {};
                 
-                // 如果不是消息事件，直接返回
-                if (event.type !== 'message') {
-                    console.log('非消息事件，跳过:', event.type);
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ status: 'ignored' }));
-                    return;
-                }
+                console.log('事件对象:', JSON.stringify(event, null, 2));
                 
+                // 飞书消息事件直接包含 message 对象
                 const message = event.message || {};
                 const contentStr = message.content || '';
                 const messageId = message.message_id || '';
                 
-                console.log('事件类型:', event.type);
-                console.log('消息对象:', JSON.stringify(message, null, 2));
+                // 如果没有 message 对象，可能是其他类型的事件
+                if (!message.message_id) {
+                    console.log('非消息事件，跳过');
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ status: 'ignored' }));
+                    return;
+                }
 
                 // 消息去重检查
                 if (messageId && isMessageProcessed(messageId)) {
